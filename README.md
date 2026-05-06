@@ -323,7 +323,7 @@ Key configuration:
 
 | Service | Port | Relationship |
 |---------|------|--------------|
-| orchestrator-service | 8093 | Consumes `saga.commands.orchestrator` |
-| notification-service | 8085 | Consumes `trace.document.received` |
+| orchestrator-service | 8100 | Consumes `saga.commands.orchestrator` |
+| notification-service | 8099 | Consumes `trace.document.received` |
 | invoice-processing-service | 8082 | Processes INVOICE documents |
-| taxinvoice-processing-service | 8088 | Processes TAX_INVOICE documents |
+| taxinvoice-processing-service | 8083 | Processes TAX_INVOICE documents |
