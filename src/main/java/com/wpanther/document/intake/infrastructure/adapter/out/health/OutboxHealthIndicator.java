@@ -1,7 +1,7 @@
 package com.wpanther.document.intake.infrastructure.adapter.out.health;
 
-import com.wpanther.document.intake.infrastructure.adapter.out.persistence.outbox.SpringDataOutboxRepository;
-import com.wpanther.saga.domain.outbox.OutboxStatus;
+import com.wpanther.document.intake.application.port.out.OutboxHealthPort;
+import com.wpanther.document.intake.application.port.out.OutboxHealthStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -10,33 +10,18 @@ import org.springframework.boot.actuate.health.HealthIndicator;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
-/**
- * Spring Boot Actuator health indicator for the transactional outbox.
- * <p>
- * Reports:
- * <ul>
- *   <li>{@code DOWN} when there are FAILED outbox events — these require manual intervention.</li>
- *   <li>{@code OUT_OF_SERVICE} when the PENDING backlog exceeds the configured threshold,
- *       which may indicate the Debezium CDC connector is not consuming events.</li>
- *   <li>{@code DOWN} when the database is unreachable.</li>
- *   <li>{@code UP} otherwise.</li>
- * </ul>
- * <p>
- * The pending backlog threshold is configurable via {@code app.outbox.pending-threshold}
- * (default: 100). Exposed at {@code /actuator/health} as the {@code outbox} component.
- */
 @Component("outbox")
 public class OutboxHealthIndicator implements HealthIndicator {
 
     private static final Logger log = LoggerFactory.getLogger(OutboxHealthIndicator.class);
 
-    private final SpringDataOutboxRepository outboxRepository;
+    private final OutboxHealthPort outboxHealthPort;
     private final long pendingThreshold;
 
     public OutboxHealthIndicator(
-            SpringDataOutboxRepository outboxRepository,
+            OutboxHealthPort outboxHealthPort,
             @Value("${app.outbox.pending-threshold:100}") long pendingThreshold) {
-        this.outboxRepository = outboxRepository;
+        this.outboxHealthPort = outboxHealthPort;
         this.pendingThreshold = pendingThreshold;
     }
 
@@ -44,8 +29,8 @@ public class OutboxHealthIndicator implements HealthIndicator {
     @Transactional(readOnly = true)
     public Health health() {
         try {
-            long failedCount = outboxRepository.countByStatus(OutboxStatus.FAILED);
-            long pendingCount = outboxRepository.countByStatus(OutboxStatus.PENDING);
+            long failedCount  = outboxHealthPort.countByStatus(OutboxHealthStatus.FAILED);
+            long pendingCount = outboxHealthPort.countByStatus(OutboxHealthStatus.PENDING);
 
             if (failedCount > 0) {
                 log.warn("Outbox health: {} failed event(s) require manual intervention", failedCount);

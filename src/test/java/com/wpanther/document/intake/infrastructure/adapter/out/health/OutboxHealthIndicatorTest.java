@@ -1,7 +1,7 @@
 package com.wpanther.document.intake.infrastructure.adapter.out.health;
 
-import com.wpanther.document.intake.infrastructure.adapter.out.persistence.outbox.SpringDataOutboxRepository;
-import com.wpanther.saga.domain.outbox.OutboxStatus;
+import com.wpanther.document.intake.application.port.out.OutboxHealthPort;
+import com.wpanther.document.intake.application.port.out.OutboxHealthStatus;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -22,20 +22,20 @@ import static org.mockito.Mockito.when;
 class OutboxHealthIndicatorTest {
 
     @Mock
-    private SpringDataOutboxRepository outboxRepository;
+    private OutboxHealthPort outboxHealthPort;
 
     private OutboxHealthIndicator healthIndicator;
 
     @BeforeEach
     void setUp() {
-        healthIndicator = new OutboxHealthIndicator(outboxRepository, 100);
+        healthIndicator = new OutboxHealthIndicator(outboxHealthPort, 100);
     }
 
     @Test
     @DisplayName("Health returns UP when no failed or pending events")
     void testHealthReturnsUpWhenNoEvents() {
-        when(outboxRepository.countByStatus(OutboxStatus.FAILED)).thenReturn(0L);
-        when(outboxRepository.countByStatus(OutboxStatus.PENDING)).thenReturn(0L);
+        when(outboxHealthPort.countByStatus(OutboxHealthStatus.FAILED)).thenReturn(0L);
+        when(outboxHealthPort.countByStatus(OutboxHealthStatus.PENDING)).thenReturn(0L);
 
         Health health = healthIndicator.health();
 
@@ -47,8 +47,8 @@ class OutboxHealthIndicatorTest {
     @Test
     @DisplayName("Health returns UP when pending events below threshold")
     void testHealthReturnsUpWhenPendingBelowThreshold() {
-        when(outboxRepository.countByStatus(OutboxStatus.FAILED)).thenReturn(0L);
-        when(outboxRepository.countByStatus(OutboxStatus.PENDING)).thenReturn(50L);
+        when(outboxHealthPort.countByStatus(OutboxHealthStatus.FAILED)).thenReturn(0L);
+        when(outboxHealthPort.countByStatus(OutboxHealthStatus.PENDING)).thenReturn(50L);
 
         Health health = healthIndicator.health();
 
@@ -59,8 +59,8 @@ class OutboxHealthIndicatorTest {
     @Test
     @DisplayName("Health returns DOWN when failed events exist")
     void testHealthReturnsDownWhenFailedEventsExist() {
-        when(outboxRepository.countByStatus(OutboxStatus.FAILED)).thenReturn(5L);
-        when(outboxRepository.countByStatus(OutboxStatus.PENDING)).thenReturn(10L);
+        when(outboxHealthPort.countByStatus(OutboxHealthStatus.FAILED)).thenReturn(5L);
+        when(outboxHealthPort.countByStatus(OutboxHealthStatus.PENDING)).thenReturn(10L);
 
         Health health = healthIndicator.health();
 
@@ -72,8 +72,8 @@ class OutboxHealthIndicatorTest {
     @Test
     @DisplayName("Health returns OUT_OF_SERVICE when pending exceeds threshold")
     void testHealthReturnsOutOfServiceWhenPendingExceedsThreshold() {
-        when(outboxRepository.countByStatus(OutboxStatus.FAILED)).thenReturn(0L);
-        when(outboxRepository.countByStatus(OutboxStatus.PENDING)).thenReturn(150L);
+        when(outboxHealthPort.countByStatus(OutboxHealthStatus.FAILED)).thenReturn(0L);
+        when(outboxHealthPort.countByStatus(OutboxHealthStatus.PENDING)).thenReturn(150L);
 
         Health health = healthIndicator.health();
 
@@ -85,7 +85,7 @@ class OutboxHealthIndicatorTest {
     @Test
     @DisplayName("Health returns DOWN when database unreachable")
     void testHealthReturnsDownWhenDatabaseUnreachable() {
-        when(outboxRepository.countByStatus(OutboxStatus.FAILED))
+        when(outboxHealthPort.countByStatus(OutboxHealthStatus.FAILED))
             .thenThrow(new RuntimeException("Database connection failed"));
 
         Health health = healthIndicator.health();
@@ -97,7 +97,7 @@ class OutboxHealthIndicatorTest {
     @Test
     @DisplayName("Constructor with custom pending threshold")
     void testConstructorWithCustomThreshold() {
-        OutboxHealthIndicator indicator = new OutboxHealthIndicator(outboxRepository, 50);
+        OutboxHealthIndicator indicator = new OutboxHealthIndicator(outboxHealthPort, 50);
         assertThat(indicator).isNotNull();
     }
 }

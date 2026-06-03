@@ -1,5 +1,7 @@
 package com.wpanther.document.intake.infrastructure.adapter.out.persistence.outbox;
 
+import com.wpanther.document.intake.application.port.out.OutboxHealthPort;
+import com.wpanther.document.intake.application.port.out.OutboxHealthStatus;
 import com.wpanther.saga.domain.outbox.OutboxEvent;
 import com.wpanther.saga.domain.outbox.OutboxEventRepository;
 import com.wpanther.saga.domain.outbox.OutboxStatus;
@@ -21,7 +23,7 @@ import java.util.stream.Stream;
  * resides in the service's own database for transactional consistency.
  */
 @Component
-public class JpaOutboxEventRepository implements OutboxEventRepository {
+public class JpaOutboxEventRepository implements OutboxEventRepository, OutboxHealthPort {
 
     private static final Logger log = LoggerFactory.getLogger(JpaOutboxEventRepository.class);
 
@@ -91,5 +93,15 @@ public class JpaOutboxEventRepository implements OutboxEventRepository {
                 ).stream()
                 .map(OutboxEventEntity::toDomain)
                 .toList();
+    }
+
+    @Override
+    public long countByStatus(OutboxHealthStatus status) {
+        OutboxStatus sagaStatus = switch (status) {
+            case PENDING   -> OutboxStatus.PENDING;
+            case PUBLISHED -> OutboxStatus.PUBLISHED;
+            case FAILED    -> OutboxStatus.FAILED;
+        };
+        return springRepository.countByStatus(sagaStatus);
     }
 }
