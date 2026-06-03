@@ -1,6 +1,5 @@
 package com.wpanther.document.intake.domain.model;
 
-import java.io.Serializable;
 import java.util.List;
 
 /**
@@ -10,7 +9,7 @@ public record ValidationResult(
     boolean valid,
     List<String> errors,
     List<String> warnings
-) implements Serializable {
+) {
 
     public ValidationResult {
         errors = errors != null ? List.copyOf(errors) : List.of();
