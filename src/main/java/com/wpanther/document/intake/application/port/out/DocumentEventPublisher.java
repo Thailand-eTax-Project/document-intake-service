@@ -1,9 +1,8 @@
 package com.wpanther.document.intake.application.port.out;
 
-import com.wpanther.document.intake.application.dto.event.DocumentReceivedTraceEvent;
-import com.wpanther.document.intake.application.dto.event.StartSagaCommand;
+import com.wpanther.document.intake.domain.model.IncomingDocument;
 
 public interface DocumentEventPublisher {
-    void publishStartSagaCommand(StartSagaCommand command);
-    void publishTraceEvent(DocumentReceivedTraceEvent event);
+    void publishStartSagaCommand(IncomingDocument document, String xmlContent);
+    void publishTraceEvent(IncomingDocument document);
 }

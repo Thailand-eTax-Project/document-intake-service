@@ -1,8 +1,6 @@
 package com.wpanther.document.intake.application.usecase;
 
 import com.wpanther.document.intake.application.port.out.DocumentIntakeMetricsPort;
-import com.wpanther.document.intake.application.dto.event.DocumentReceivedTraceEvent;
-import com.wpanther.document.intake.application.dto.event.StartSagaCommand;
 import com.wpanther.document.intake.domain.model.DocumentType;
 import com.wpanther.document.intake.domain.model.IncomingDocument;
 import com.wpanther.document.intake.domain.model.ValidationResult;
@@ -124,15 +122,7 @@ public class DocumentIntakeApplicationService implements SubmitDocumentUseCase, 
 
         // Publish trace event IMMEDIATELY (before validation)
         // This provides visibility into the document intake process
-        DocumentReceivedTraceEvent traceEvent = DocumentReceivedTraceEvent.builder()
-            .documentId(document.getId().toString())
-            .documentType(document.getDocumentType().name())
-            .documentNumber(document.getDocumentNumber())
-            .correlationId(correlationId)
-            .status(document.getStatus().name())
-            .source(source)
-            .build();
-        eventPublisher.publishTraceEvent(traceEvent);
+        eventPublisher.publishTraceEvent(document);
 
         // Start validation
         document.startValidation();
@@ -154,26 +144,10 @@ public class DocumentIntakeApplicationService implements SubmitDocumentUseCase, 
             // Record validation success
             metrics.incrementValidated(documentType.name());
 
-            StartSagaCommand sagaCommand = StartSagaCommand.builder()
-                .documentId(document.getId().toString())
-                .documentType(document.getDocumentType().name())
-                .documentNumber(document.getDocumentNumber())
-                .xmlContent(xmlContent)
-                .correlationId(correlationId)
-                .source(source)
-                .build();
-            eventPublisher.publishStartSagaCommand(sagaCommand);
+            eventPublisher.publishStartSagaCommand(document, xmlContent);
 
             // Publish VALIDATED trace event
-            DocumentReceivedTraceEvent validatedEvent = DocumentReceivedTraceEvent.builder()
-                .documentId(document.getId().toString())
-                .documentType(document.getDocumentType().name())
-                .documentNumber(document.getDocumentNumber())
-                .correlationId(correlationId)
-                .status(document.getStatus().name())
-                .source(source)
-                .build();
-            eventPublisher.publishTraceEvent(validatedEvent);
+            eventPublisher.publishTraceEvent(document);
 
             // Mark document as FORWARDED after saga command is published
             document.markForwarded();
@@ -183,15 +157,7 @@ public class DocumentIntakeApplicationService implements SubmitDocumentUseCase, 
             metrics.incrementForwarded(documentType.name());
 
             // Publish FORWARDED trace event
-            DocumentReceivedTraceEvent forwardedEvent = DocumentReceivedTraceEvent.builder()
-                .documentId(document.getId().toString())
-                .documentType(document.getDocumentType().name())
-                .documentNumber(document.getDocumentNumber())
-                .correlationId(correlationId)
-                .status(document.getStatus().name())
-                .source(source)
-                .build();
-            eventPublisher.publishTraceEvent(forwardedEvent);
+            eventPublisher.publishTraceEvent(document);
         } else {
             // Record validation failure
             String failureReason = validationResult.errorCount() > 0
@@ -200,15 +166,7 @@ public class DocumentIntakeApplicationService implements SubmitDocumentUseCase, 
             metrics.incrementInvalid(failureReason);
 
             // Publish INVALID trace event so notification-service tracks rejected documents
-            DocumentReceivedTraceEvent invalidEvent = DocumentReceivedTraceEvent.builder()
-                .documentId(document.getId().toString())
-                .documentType(document.getDocumentType().name())
-                .documentNumber(document.getDocumentNumber())
-                .correlationId(correlationId)
-                .status(document.getStatus().name())
-                .source(source)
-                .build();
-            eventPublisher.publishTraceEvent(invalidEvent);
+            eventPublisher.publishTraceEvent(document);
 
             log.warn("Document {} failed validation with {} error(s)",
                 documentNumber, document.getValidationResult().errorCount());

@@ -9,8 +9,6 @@ import com.wpanther.document.intake.application.port.out.XmlValidationPort;
 import com.wpanther.document.intake.application.port.out.DocumentEventPublisher;
 import com.wpanther.document.intake.domain.model.DocumentType;
 import com.wpanther.document.intake.application.port.out.DocumentIntakeMetricsPort;
-import com.wpanther.document.intake.application.dto.event.DocumentReceivedTraceEvent;
-import com.wpanther.document.intake.application.dto.event.StartSagaCommand;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -29,7 +27,6 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.*;
 
@@ -457,41 +454,27 @@ class DocumentIntakeServiceTest {
     @DisplayName("Submit valid document publishes three trace events and one saga command")
     void testSubmitValidDocumentPublishesCorrectEvents() {
         String correlationId = "corr-events-123";
+
+        // IncomingDocument is mutable — capture status at call time rather than after all transitions
+        List<DocumentStatus> capturedStatuses = new java.util.ArrayList<>();
+        doAnswer(inv -> {
+            capturedStatuses.add(((IncomingDocument) inv.getArgument(0)).getStatus());
+            return null;
+        }).when(eventPublisher).publishTraceEvent(any(IncomingDocument.class));
+
         documentIntakeService.submitDocument(VALID_XML, DEFAULT_SOURCE, correlationId);
 
-        // Verify trace events: RECEIVED, VALIDATED, FORWARDED (3 events)
-        verify(eventPublisher, times(3)).publishTraceEvent(any(DocumentReceivedTraceEvent.class));
+        assertThat(capturedStatuses).containsExactly(
+            DocumentStatus.RECEIVED, DocumentStatus.VALIDATED, DocumentStatus.FORWARDED);
 
-        // Verify saga command was published
-        verify(eventPublisher, times(1)).publishStartSagaCommand(any(StartSagaCommand.class));
+        // Verify saga command published with correct document state
+        ArgumentCaptor<IncomingDocument> sagaDocCaptor = ArgumentCaptor.forClass(IncomingDocument.class);
+        verify(eventPublisher).publishStartSagaCommand(sagaDocCaptor.capture(), any(String.class));
 
-        // Capture and verify trace event contents
-        ArgumentCaptor<DocumentReceivedTraceEvent> traceCaptor = ArgumentCaptor.forClass(DocumentReceivedTraceEvent.class);
-        verify(eventPublisher, times(3)).publishTraceEvent(traceCaptor.capture());
-
-        List<DocumentReceivedTraceEvent> events = traceCaptor.getAllValues();
-        assertThat(events).hasSize(3);
-
-        // First event should be RECEIVED
-        assertThat(events.get(0).getStatus()).isEqualTo("RECEIVED");
-        assertThat(events.get(0).getCorrelationId()).isEqualTo(correlationId);
-
-        // Second event should be VALIDATED
-        assertThat(events.get(1).getStatus()).isEqualTo("VALIDATED");
-        assertThat(events.get(1).getCorrelationId()).isEqualTo(correlationId);
-
-        // Third event should be FORWARDED
-        assertThat(events.get(2).getStatus()).isEqualTo("FORWARDED");
-        assertThat(events.get(2).getCorrelationId()).isEqualTo(correlationId);
-
-        // Capture and verify saga command
-        ArgumentCaptor<StartSagaCommand> sagaCaptor = ArgumentCaptor.forClass(StartSagaCommand.class);
-        verify(eventPublisher).publishStartSagaCommand(sagaCaptor.capture());
-
-        StartSagaCommand sagaCommand = sagaCaptor.getValue();
-        assertThat(sagaCommand.getCorrelationId()).isEqualTo(correlationId);
-        assertThat(sagaCommand.getDocumentType()).isEqualTo(DocumentType.TAX_INVOICE.name());
-        assertThat(sagaCommand.getSource()).isEqualTo(DEFAULT_SOURCE);
+        IncomingDocument sagaDoc = sagaDocCaptor.getValue();
+        assertThat(sagaDoc.getCorrelationId()).isEqualTo(correlationId);
+        assertThat(sagaDoc.getDocumentType()).isEqualTo(DocumentType.TAX_INVOICE);
+        assertThat(sagaDoc.getSource()).isEqualTo(DEFAULT_SOURCE);
     }
 
     @Test
@@ -500,29 +483,22 @@ class DocumentIntakeServiceTest {
         when(validationService.validate(any())).thenReturn(ValidationResult.invalid(List.of("Validation error")));
 
         String correlationId = "corr-invalid-123";
+
+        // IncomingDocument is mutable — capture status at call time
+        List<DocumentStatus> capturedStatuses = new java.util.ArrayList<>();
+        List<String> capturedSources = new java.util.ArrayList<>();
+        doAnswer(inv -> {
+            IncomingDocument d = inv.getArgument(0);
+            capturedStatuses.add(d.getStatus());
+            capturedSources.add(d.getSource());
+            return null;
+        }).when(eventPublisher).publishTraceEvent(any(IncomingDocument.class));
+
         documentIntakeService.submitDocument(VALID_XML, ALTERNATIVE_SOURCE, correlationId);
 
-        // Verify two trace events: RECEIVED and INVALID
-        verify(eventPublisher, times(2)).publishTraceEvent(any(DocumentReceivedTraceEvent.class));
-
-        // Verify saga command was NOT published
-        verify(eventPublisher, never()).publishStartSagaCommand(any(StartSagaCommand.class));
-
-        // Capture and verify trace events
-        ArgumentCaptor<DocumentReceivedTraceEvent> traceCaptor = ArgumentCaptor.forClass(DocumentReceivedTraceEvent.class);
-        verify(eventPublisher, times(2)).publishTraceEvent(traceCaptor.capture());
-
-        List<DocumentReceivedTraceEvent> events = traceCaptor.getAllValues();
-        assertThat(events).hasSize(2);
-
-        // First event should be RECEIVED
-        assertThat(events.get(0).getStatus()).isEqualTo("RECEIVED");
-        assertThat(events.get(0).getCorrelationId()).isEqualTo(correlationId);
-
-        // Second event should be INVALID
-        assertThat(events.get(1).getStatus()).isEqualTo("INVALID");
-        assertThat(events.get(1).getCorrelationId()).isEqualTo(correlationId);
-        assertThat(events.get(1).getSource()).isEqualTo(ALTERNATIVE_SOURCE);
+        assertThat(capturedStatuses).containsExactly(DocumentStatus.RECEIVED, DocumentStatus.INVALID);
+        assertThat(capturedSources).containsOnly(ALTERNATIVE_SOURCE);
+        verify(eventPublisher, never()).publishStartSagaCommand(any(IncomingDocument.class), any(String.class));
     }
 
     @Test
@@ -534,8 +510,8 @@ class DocumentIntakeServiceTest {
         documentIntakeService.submitDocument(VALID_XML, DEFAULT_SOURCE, "corr-warning");
 
         // Documents with warnings are still valid, so full event sequence should be published
-        verify(eventPublisher, times(3)).publishTraceEvent(any(DocumentReceivedTraceEvent.class));
-        verify(eventPublisher, times(1)).publishStartSagaCommand(any(StartSagaCommand.class));
+        verify(eventPublisher, times(3)).publishTraceEvent(any(IncomingDocument.class));
+        verify(eventPublisher, times(1)).publishStartSagaCommand(any(IncomingDocument.class), any(String.class));
     }
 
     @Test
@@ -547,7 +523,7 @@ class DocumentIntakeServiceTest {
             .isInstanceOf(IllegalArgumentException.class);
 
         // No trace events should be published when document number extraction fails
-        verify(eventPublisher, never()).publishTraceEvent(any(DocumentReceivedTraceEvent.class));
-        verify(eventPublisher, never()).publishStartSagaCommand(any(StartSagaCommand.class));
+        verify(eventPublisher, never()).publishTraceEvent(any(IncomingDocument.class));
+        verify(eventPublisher, never()).publishStartSagaCommand(any(IncomingDocument.class), any(String.class));
     }
 }
