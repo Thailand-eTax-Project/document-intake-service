@@ -22,3 +22,5 @@ buildNumber.properties
 # Claude Code
 CLAUDE.md
 .worktrees/
+docs/plans/
+docs/superpowers/
