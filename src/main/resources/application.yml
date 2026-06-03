@@ -69,13 +69,14 @@ app:
       issuer-uri: ${JWT_ISSUER_URI:}
       # JWKS endpoint (if not using standard issuer-uri)
       jwks-uri: ${JWT_JWKS_URI:}
-    # Rate limiting — values feed the Resilience4j documentIntake instance below
-    rate-limit:
-      enabled: ${RATE_LIMIT_ENABLED:true}
-      # Maximum requests per second per client IP
-      requests-per-second: ${RATE_LIMIT_REQUESTS_PER_SECOND:10}
-      # Time period in seconds for the rate limit
-      time-period-seconds: ${RATE_LIMIT_TIME_PERIOD_SECONDS:60}
+
+  # Rate limiting — values feed the Resilience4j documentIntake instance below
+  rate-limit:
+    enabled: ${RATE_LIMIT_ENABLED:true}
+    # Maximum requests per second per client IP
+    requests-per-second: ${RATE_LIMIT_REQUESTS_PER_SECOND:10}
+    # Time period in seconds for the rate limit
+    time-period-seconds: ${RATE_LIMIT_TIME_PERIOD_SECONDS:60}
 
   # Validation limits
   validation:
