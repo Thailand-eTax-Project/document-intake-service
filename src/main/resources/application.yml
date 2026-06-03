@@ -69,7 +69,7 @@ app:
       issuer-uri: ${JWT_ISSUER_URI:}
       # JWKS endpoint (if not using standard issuer-uri)
       jwks-uri: ${JWT_JWKS_URI:}
-    # Rate limiting using Apache Camel throttler
+    # Rate limiting — values feed the Resilience4j documentIntake instance below
     rate-limit:
       enabled: ${RATE_LIMIT_ENABLED:true}
       # Maximum requests per second per client IP

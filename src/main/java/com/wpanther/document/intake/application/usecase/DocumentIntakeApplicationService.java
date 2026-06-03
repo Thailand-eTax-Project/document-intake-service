@@ -66,7 +66,7 @@ public class DocumentIntakeApplicationService implements SubmitDocumentUseCase, 
      * @param correlationId the correlation ID for tracing
      * @return the created IncomingDocument
      * @throws IllegalArgumentException if document number or document type cannot be extracted
-     * @throws IllegalStateException if document number already exists
+     * @throws com.wpanther.document.intake.domain.exception.DuplicateDocumentException if document number already exists
      */
     @Transactional
     @Override

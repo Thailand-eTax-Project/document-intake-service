@@ -116,6 +116,9 @@ public class TedaXmlValidationAdapter implements XmlValidationPort {
         if (xmlContent == null) throw new IllegalArgumentException("xmlContent must not be null");
         if (xmlContent.isBlank()) return xmlContent;
         try {
+            // Creates a fresh DocumentBuilder per call rather than using threadLocalDocumentBuilder,
+            // because the builder is not reused across calls — thread-local is only needed when a
+            // single builder instance is retained across invocations.
             org.w3c.dom.Document doc = XML_DBF.newDocumentBuilder()
                 .parse(new org.xml.sax.InputSource(new java.io.StringReader(xmlContent.strip())));
             stripWhitespaceOnlyTextNodes(doc);
