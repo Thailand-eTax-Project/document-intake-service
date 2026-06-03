@@ -7,11 +7,11 @@ import com.wpanther.document.intake.domain.model.DocumentType;
 import com.wpanther.document.intake.domain.model.IncomingDocument;
 import com.wpanther.document.intake.domain.model.ValidationResult;
 import com.wpanther.document.intake.application.port.out.DocumentEventPublisher;
+import com.wpanther.document.intake.domain.exception.DuplicateDocumentException;
 import com.wpanther.document.intake.domain.repository.DocumentRepository;
 import com.wpanther.document.intake.application.port.out.XmlValidationPort;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -127,11 +127,7 @@ public class DocumentIntakeApplicationService implements SubmitDocumentUseCase, 
         if (documentRepository.existsByDocumentNumber(documentNumber)) {
             log.warn("Document number {} already exists", documentNumber);
             metrics.incrementFailed("duplicate_document_number");
-            throw new IllegalStateException(
-                "Document number already exists: " + documentNumber + ". " +
-                "A document with this number has already been submitted. " +
-                "Please check existing documents or use a different document number."
-            );
+            throw new DuplicateDocumentException(documentNumber);
         }
 
         // Create incoming document
@@ -143,18 +139,8 @@ public class DocumentIntakeApplicationService implements SubmitDocumentUseCase, 
             .documentType(documentType)
             .build();
 
-        // Save initial state — catch concurrent duplicate that slipped past the existence check
-        try {
-            document = documentRepository.save(document);
-        } catch (DataIntegrityViolationException e) {
-            log.warn("Concurrent duplicate document number detected on save: {}", documentNumber);
-            metrics.incrementFailed("concurrent_duplicate");
-            throw new IllegalStateException(
-                "Document number already exists: " + documentNumber + ". " +
-                "A document with this number has already been submitted. " +
-                "Please check existing documents or use a different document number."
-            );
-        }
+        // Save initial state
+        document = documentRepository.save(document);
         log.info("Created incoming document: {} with ID: {}", documentNumber, document.getId());
 
         // Publish trace event IMMEDIATELY (before validation)

@@ -1,6 +1,7 @@
 package com.wpanther.document.intake.infrastructure.adapter.out.persistence;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wpanther.document.intake.domain.exception.DuplicateDocumentException;
 import com.wpanther.document.intake.domain.exception.ValidationResultSerializationException;
 import com.wpanther.document.intake.domain.model.DocumentStatus;
 import com.wpanther.document.intake.domain.model.DocumentType;
@@ -9,6 +10,7 @@ import com.wpanther.document.intake.domain.model.ValidationResult;
 import com.wpanther.document.intake.domain.repository.DocumentRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -35,11 +37,13 @@ public class JpaDocumentRepository implements DocumentRepository {
     @Override
     public IncomingDocument save(IncomingDocument document) {
         log.debug("Saving document: {}", document.getId());
-
-        IncomingDocumentEntity entity = toEntity(document);
-        IncomingDocumentEntity savedEntity = jpaRepository.save(entity);
-
-        return toDomain(savedEntity);
+        try {
+            IncomingDocumentEntity entity = toEntity(document);
+            IncomingDocumentEntity savedEntity = jpaRepository.save(entity);
+            return toDomain(savedEntity);
+        } catch (DataIntegrityViolationException e) {
+            throw new DuplicateDocumentException(document.getDocumentNumber(), e);
+        }
     }
 
     @Override

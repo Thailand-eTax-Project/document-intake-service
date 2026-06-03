@@ -1,5 +1,6 @@
 package com.wpanther.document.intake.application.usecase;
 
+import com.wpanther.document.intake.domain.exception.DuplicateDocumentException;
 import com.wpanther.document.intake.domain.model.IncomingDocument;
 import com.wpanther.document.intake.domain.model.DocumentStatus;
 import com.wpanther.document.intake.domain.model.ValidationResult;
@@ -184,8 +185,7 @@ class DocumentIntakeServiceTest {
         when(documentRepository.existsByDocumentNumber(TEST_DOCUMENT_NUMBER)).thenReturn(true);
 
         assertThatThrownBy(() -> documentIntakeService.submitDocument(VALID_XML, DEFAULT_SOURCE, "corr-123"))
-            .isInstanceOf(IllegalStateException.class)
-            .hasMessageContaining("already exists")
+            .isInstanceOf(DuplicateDocumentException.class)
             .hasMessageContaining(TEST_DOCUMENT_NUMBER);
 
         // Verify no save was attempted
