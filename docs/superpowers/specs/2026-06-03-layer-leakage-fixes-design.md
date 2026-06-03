@@ -12,7 +12,9 @@ coupling to Spring, Camel, and Java serialization from layers that should be fra
 
 ## Goals
 
-1. Remove all Spring/Camel imports from the domain and application layers.
+1. Remove Spring infrastructure exception types and XML parser imports from the application
+   layer. Framework lifecycle annotations (`@Service`, `@Transactional`) on application
+   service classes are acceptable and outside this fix set.
 2. Keep the domain model free of serialization contracts.
 3. Confine XML parsing infrastructure to the infrastructure adapter.
 4. Replace Camel-mediated REST dispatch with a direct use-case call.
@@ -101,35 +103,44 @@ The health indicator injects `SpringDataOutboxRepository` directly — a Spring 
 interface — because `OutboxEventRepository` (saga-commons) does not expose count
 operations. This couples the health adapter to the persistence layer type.
 
-**Fix:** Create `application/port/out/OutboxHealthPort`. Implement it in
-`JpaOutboxEventRepository` via a one-line delegation. The health indicator injects
+**Fix:** Create `application/port/out/OutboxHealthPort` using a local enum so the port
+carries no saga-commons types. Define `OutboxHealthStatus` in the same package.
+Implement the port in `JpaOutboxEventRepository`, translating from `OutboxStatus`
+(saga-commons) to `OutboxHealthStatus` in the adapter. The health indicator injects
 the port.
 
 ```java
+// application/port/out/OutboxHealthStatus.java
+public enum OutboxHealthStatus { PENDING, PUBLISHED, FAILED }
+
 // application/port/out/OutboxHealthPort.java
 public interface OutboxHealthPort {
-    long countByStatus(OutboxStatus status);
+    long countByStatus(OutboxHealthStatus status);
 }
 ```
 
 ```java
-// JpaOutboxEventRepository — add to class declaration and body
+// JpaOutboxEventRepository — implement OutboxHealthPort with translation
 public class JpaOutboxEventRepository implements OutboxEventRepository, OutboxHealthPort {
 
     @Override
-    public long countByStatus(OutboxStatus status) {
-        return springRepository.countByStatus(status);
+    public long countByStatus(OutboxHealthStatus status) {
+        OutboxStatus sagaStatus = switch (status) {
+            case PENDING   -> OutboxStatus.PENDING;
+            case PUBLISHED -> OutboxStatus.PUBLISHED;
+            case FAILED    -> OutboxStatus.FAILED;
+        };
+        return springRepository.countByStatus(sagaStatus);
     }
 }
 ```
 
 ```java
-// OutboxHealthIndicator — replace SpringDataOutboxRepository with port
+// OutboxHealthIndicator — inject OutboxHealthPort; no saga-commons import
 private final OutboxHealthPort outboxHealthPort;
 
-// usage unchanged; only the field type and import change
-long failedCount = outboxHealthPort.countByStatus(OutboxStatus.FAILED);
-long pendingCount = outboxHealthPort.countByStatus(OutboxStatus.PENDING);
+long failedCount  = outboxHealthPort.countByStatus(OutboxHealthStatus.FAILED);
+long pendingCount = outboxHealthPort.countByStatus(OutboxHealthStatus.PENDING);
 ```
 
 ---
@@ -149,24 +160,36 @@ uses). Remove the `direct:document-intake` route. The controller calls
 `submitDocumentUseCase.submitDocument()` directly. Rate limiting is provided by
 Resilience4j's `@RateLimiter` AOP annotation.
 
-**New dependency** (managed by existing Spring Cloud BOM):
+**New dependency** — Spring Cloud BOM does not manage Resilience4j. Match the version
+used by sibling services (`xml-signing-service`, `cancellationnote-pdf-generation-service`):
+
 ```xml
+<!-- pom.xml properties section -->
+<resilience4j.version>2.2.0</resilience4j.version>
+
+<!-- pom.xml dependencies -->
 <dependency>
     <groupId>io.github.resilience4j</groupId>
     <artifactId>resilience4j-spring-boot3</artifactId>
+    <version>${resilience4j.version}</version>
 </dependency>
 ```
 
-**`application.yml` addition:**
+**`application.yml` addition** — both `requests-per-second` and `time-period-seconds`
+are referenced so `RateLimitProperties` values remain effective:
 ```yaml
 resilience4j:
   ratelimiter:
     instances:
       documentIntake:
         limit-for-period: ${app.rate-limit.requests-per-second:10}
-        limit-refresh-period: 1s
+        limit-refresh-period: "${app.rate-limit.time-period-seconds:60}s"
         timeout-duration: 0s
 ```
+
+Note: `limit-refresh-period` is a Spring Duration — the property must be a valid
+duration string, hence the `"…s"` interpolation. The default behaviour is
+10 requests per 60-second window, identical to the previous Camel throttler default.
 
 **Controller changes:**
 - Remove `ProducerTemplate camelProducer` field and injection.
@@ -191,10 +214,12 @@ resilience4j:
 - `RateLimitProperties` itself is kept — its values feed the `application.yml`
   Resilience4j property references.
 
-**Behavioral note:** The Camel throttler applied rate limits per `correlationId`
-(per-client). The Resilience4j `@RateLimiter` is global per JVM instance. This is
-an intentional trade-off: global limiting is simpler and correct for single-instance
-deployments.
+**Behavioral note:** The Camel throttler applied limits per `correlationId` header
+value. Because the controller generates a server-side UUID when no `X-Correlation-ID`
+is sent (`effectiveCorrelationId = correlationId != null ? correlationId : UUID.randomUUID()`),
+every unauthenticated request received its own bucket — making the throttler effectively
+a no-op for most traffic. The Resilience4j `@RateLimiter` is global per JVM instance,
+which is a stricter and more meaningful constraint.
 
 ---
 
@@ -207,9 +232,19 @@ deployments.
 between them in the application service (`EventStatus.RECEIVED.getValue()`, etc.) is
 redundant and creates a sync risk.
 
-**Fix:** Delete `EventStatus.java`. Replace all four `EventStatus.X.getValue()` call
-sites in `DocumentIntakeApplicationService` with `document.getStatus().name()`. The
-string values are identical, so this is a zero-behavior-change substitution.
+**Fix:** Delete `EventStatus.java` and its test class `EventStatusTest.java`. Replace
+all four `EventStatus.X.getValue()` call sites in `DocumentIntakeApplicationService`
+with `document.getStatus().name()`. The string values are identical, so this is a
+zero-behavior-change substitution.
+
+`EventStatus.fromValue(String)` is a public method but has no callers outside this
+service (confirmed by grep across all sibling services). No external consumer depends
+on it.
+
+`DocumentIntakeServiceTest.java` contains assertions against `EventStatus` string
+values (e.g., `assertThat(events.get(0).getStatus()).isEqualTo(EventStatus.RECEIVED.getValue())`)
+— these must be updated to use the raw string literals `"RECEIVED"`, `"VALIDATED"`,
+`"FORWARDED"`, `"INVALID"` instead.
 
 ---
 
@@ -247,30 +282,50 @@ that has no business meaning. Actual serialization is JSON, handled by Jackson i
 | `domain/exception/DuplicateDocumentException.java` | **New** |
 | `domain/model/ValidationResult.java` | Modify — remove `implements Serializable` |
 | `application/port/out/XmlValidationPort.java` | Modify — add `normalize()` method |
-| `application/port/out/OutboxHealthPort.java` | **New** |
+| `application/port/out/OutboxHealthStatus.java` | **New** — local enum (PENDING, PUBLISHED, FAILED) |
+| `application/port/out/OutboxHealthPort.java` | **New** — uses `OutboxHealthStatus`, no saga-commons import |
 | `application/usecase/DocumentIntakeApplicationService.java` | Modify — remove Spring import, XML infrastructure, `EventStatus` usage |
 | `application/dto/event/EventStatus.java` | **Delete** |
 | `application/dto/event/StartSagaCommand.java` | Modify — remove 3 dead imports |
 | `infrastructure/adapter/out/validation/TedaXmlValidationAdapter.java` | Modify — add `normalize()` implementation |
 | `infrastructure/adapter/out/persistence/JpaDocumentRepository.java` | Modify — catch and translate `DataIntegrityViolationException` |
-| `infrastructure/adapter/out/persistence/outbox/JpaOutboxEventRepository.java` | Modify — implement `OutboxHealthPort` |
-| `infrastructure/adapter/out/health/OutboxHealthIndicator.java` | Modify — inject `OutboxHealthPort` |
-| `infrastructure/adapter/in/web/DocumentIntakeController.java` | Modify — remove Camel, add Resilience4j rate limiter |
+| `infrastructure/adapter/out/persistence/outbox/JpaOutboxEventRepository.java` | Modify — implement `OutboxHealthPort` with `OutboxStatus` → `OutboxHealthStatus` translation |
+| `infrastructure/adapter/out/health/OutboxHealthIndicator.java` | Modify — inject `OutboxHealthPort`, remove `SpringDataOutboxRepository` import |
+| `infrastructure/adapter/in/web/DocumentIntakeController.java` | Modify — remove Camel, add Resilience4j rate limiter and 429 fallback |
 | `infrastructure/config/camel/CamelConfig.java` | Modify — remove `direct:` route and `RateLimitProperties` injection |
-| `pom.xml` | Modify — add `resilience4j-spring-boot3` |
+| `pom.xml` | Modify — add `resilience4j-spring-boot3` with explicit `2.2.0` version property |
 | `src/main/resources/application.yml` | Modify — add `resilience4j.ratelimiter` config block |
+| `src/test/java/…/web/DocumentIntakeControllerTest.java` | Modify — rewrite all `ProducerTemplate` stubs to mock `submitDocumentUseCase` directly; add 429 fallback test |
+| `src/test/java/…/integration/config/RestApiCdcTestConfiguration.java` | Modify — remove `ProducerTemplate` `@MockBean` and `direct:document-intake` route dependency |
+| `src/test/java/…/dto/event/EventStatusTest.java` | **Delete** |
+| `src/test/java/…/usecase/DocumentIntakeServiceTest.java` | Modify — replace `EventStatus.X.getValue()` assertions with raw string literals |
 
 ## Test Impact
 
-- Tests asserting `IllegalStateException` for duplicate documents must be updated to
-  assert `DuplicateDocumentException` (or verify the HTTP 409 response if testing via
-  the controller).
-- Tests for `DocumentIntakeApplicationService` that mock `XmlValidationPort` must stub
-  the new `normalize()` method (return the input unchanged for most tests).
-- `CamelConfigTest` — remove assertions for `direct:document-intake` route.
-- Controller tests that expect Camel-mediated invocation must be rewritten to call
-  the use case directly via MockMvc.
-- No changes needed to validation, outbox, or domain state-machine tests.
+**`DocumentIntakeControllerTest.java`** (full rewrite of submit path):
+- Remove `@MockBean ProducerTemplate producerTemplate` declaration.
+- Rewrite all 3 `producerTemplate.sendBodyAndHeader(...)` stub sites to mock
+  `submitDocumentUseCase.submitDocument(...)` throwing the relevant exception
+  (`DuplicateDocumentException` for 409, `IllegalArgumentException` for 400).
+- Add a new test for the 429 rate-limit fallback: inject a `RateLimiterRegistry`,
+  set `limitForPeriod` to 0 on the `documentIntake` instance, and assert that
+  the endpoint returns HTTP 429.
+
+**`RestApiCdcTestConfiguration.java`**:
+- Remove the `@MockBean ProducerTemplate` declaration and any stubs that configure it.
+- Remove the comment that asserts `direct:document-intake` must remain active.
+
+**`DocumentIntakeServiceTest.java`**:
+- Replace all `EventStatus.X.getValue()` assertions with raw string literals
+  (`"RECEIVED"`, `"VALIDATED"`, `"FORWARDED"`, `"INVALID"`).
+- Stub the new `normalize()` method on the `XmlValidationPort` mock to return the
+  input unchanged (`when(validationService.normalize(any())).thenAnswer(i -> i.getArgument(0))`).
+
+**`EventStatusTest.java`**: Delete alongside `EventStatus.java`.
+
+**`CamelConfigTest`**: Remove assertions for `direct:document-intake` route existence.
+
+No changes needed to validation, outbox, or domain state-machine tests.
 
 ## Alternatives Considered
 
@@ -280,3 +335,5 @@ that has no business meaning. Actual serialization is JSON, handled by Jackson i
 | `OutboxHealthPort` | Add `countByStatus` to saga-commons `OutboxEventRepository` | saga-commons is a shared library; health monitoring is a service-local concern |
 | Resilience4j global rate limit | Per-client rate limit (Bucket4j filter) | Simpler; adequate for single-instance deployment; avoids a second new dependency |
 | Keep `EventStatus` | Map from `DocumentStatus` explicitly | Identical values; mapping adds no value and creates sync risk |
+| Goal 1 scoped to exceptions/parsers | Remove `@Service`/`@Transactional` from app service (JSR-330 + manual tx) | Framework lifecycle annotations are convention in Spring Boot; removing them is scope creep with no architectural benefit |
+| `@EnableConfigurationProperties` on `RateLimitConfig` | Move registration to `CamelConfig` | Registration already lives on `RateLimitConfig` — removing `RateLimitProperties` from `CamelConfig` constructor has no effect on bean registration |
