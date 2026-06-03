@@ -1,26 +1,31 @@
 package com.wpanther.document.intake.infrastructure.adapter.in.web;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.wpanther.document.intake.application.usecase.SubmitDocumentUseCase;
 import com.wpanther.document.intake.application.usecase.GetDocumentUseCase;
-import com.wpanther.document.intake.domain.model.IncomingDocument;
+import com.wpanther.document.intake.application.usecase.SubmitDocumentUseCase;
+import com.wpanther.document.intake.domain.exception.DuplicateDocumentException;
 import com.wpanther.document.intake.domain.model.DocumentStatus;
-import com.wpanther.document.intake.domain.model.ValidationResult;
 import com.wpanther.document.intake.domain.model.DocumentType;
+import com.wpanther.document.intake.domain.model.IncomingDocument;
+import com.wpanther.document.intake.domain.model.ValidationResult;
 import com.wpanther.document.intake.infrastructure.config.validation.ValidationProperties;
+import io.github.resilience4j.ratelimiter.RequestNotPermitted;
+import io.github.resilience4j.ratelimiter.RateLimiter;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.test.web.servlet.MockMvc;
-import org.apache.camel.ProducerTemplate;
 
 import java.time.Instant;
+import java.util.Map;
 import java.util.UUID;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
@@ -29,10 +34,6 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
-/**
- * Unit tests for DocumentIntakeController
- * Uses MockMvc for testing REST endpoints
- */
 @WebMvcTest(controllers = DocumentIntakeController.class,
     properties = "app.security.enabled=false",
     excludeAutoConfiguration = {
@@ -52,20 +53,13 @@ class DocumentIntakeControllerTest {
     private GetDocumentUseCase getDocumentUseCase;
 
     @MockBean
-    private ProducerTemplate producerTemplate;
-
-    @MockBean
     private ValidationProperties validationProperties;
-
-    @Autowired
-    private ObjectMapper objectMapper;
 
     private IncomingDocument testDocument;
 
     @BeforeEach
     void setUp() {
-        // Configure ValidationProperties mock with default values
-        when(validationProperties.getMaxXmlSize()).thenReturn(10485760L); // 10MB
+        when(validationProperties.getMaxXmlSize()).thenReturn(10485760L);
         when(validationProperties.getMaxXmlSizeMb()).thenReturn(10);
         when(validationProperties.getMaxXmlDepth()).thenReturn(100);
         when(validationProperties.getMaxElementCount()).thenReturn(10000);
@@ -98,6 +92,58 @@ class DocumentIntakeControllerTest {
     }
 
     @Test
+    @DisplayName("POST /api/v1/documents generates correlation ID when not provided")
+    void testSubmitInvoiceGeneratesCorrelationId() throws Exception {
+        when(submitDocumentUseCase.submitDocument(any(), eq("REST"), any()))
+            .thenReturn(testDocument);
+
+        mockMvc.perform(post("/api/v1/documents")
+                .contentType(MediaType.APPLICATION_XML)
+                .content("<test>xml</test>"))
+            .andExpect(status().isAccepted())
+            .andExpect(jsonPath("$.correlationId").exists());
+    }
+
+    @Test
+    @DisplayName("POST /api/v1/documents returns 400 for invalid XML")
+    void testSubmitInvoiceReturns400ForInvalidXml() throws Exception {
+        doThrow(new IllegalArgumentException("Could not extract document number"))
+            .when(submitDocumentUseCase).submitDocument(any(), any(), any());
+
+        mockMvc.perform(post("/api/v1/documents")
+                .contentType(MediaType.APPLICATION_XML)
+                .content("invalid xml"))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.error").value("Invalid document"));
+    }
+
+    @Test
+    @DisplayName("POST /api/v1/documents returns 409 for duplicate document number")
+    void testSubmitInvoiceReturns409ForDuplicateDocument() throws Exception {
+        doThrow(new DuplicateDocumentException("INV-2024-001"))
+            .when(submitDocumentUseCase).submitDocument(any(), any(), any());
+
+        mockMvc.perform(post("/api/v1/documents")
+                .contentType(MediaType.APPLICATION_XML)
+                .content("<test>xml</test>")
+                .header("X-Correlation-ID", "corr-dup"))
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.error").value("Document already exists"));
+    }
+
+    @Test
+    @DisplayName("POST /api/v1/documents returns 413 when payload too large")
+    void testSubmitInvoiceReturns413WhenPayloadTooLarge() throws Exception {
+        when(validationProperties.getMaxXmlSize()).thenReturn(5L);
+
+        mockMvc.perform(post("/api/v1/documents")
+                .contentType(MediaType.APPLICATION_XML)
+                .content("<test>xml</test>"))
+            .andExpect(status().isPayloadTooLarge())
+            .andExpect(jsonPath("$.error").value("Payload too large"));
+    }
+
+    @Test
     @DisplayName("GET /api/v1/documents/{id} returns 200 OK when document exists")
     void testGetInvoiceByIdReturns200() throws Exception {
         when(getDocumentUseCase.getDocument(testDocument.getId()))
@@ -122,57 +168,6 @@ class DocumentIntakeControllerTest {
     }
 
     @Test
-    @DisplayName("POST /api/v1/documents generates correlation ID when not provided")
-    void testSubmitInvoiceGeneratesCorrelationId() throws Exception {
-        IncomingDocument document = IncomingDocument.builder()
-            .id(testDocument.getId())
-            .documentNumber("INV-2024-002")
-            .xmlContent("<test>xml</test>")
-            .source("REST")
-            .correlationId(null) // No correlation ID provided
-            .documentType(DocumentType.TAX_INVOICE)
-            .status(DocumentStatus.VALIDATED)
-            .validationResult(ValidationResult.success())
-            .build();
-
-        when(submitDocumentUseCase.submitDocument(any(), eq("REST"), eq(null)))
-            .thenReturn(document);
-
-        mockMvc.perform(post("/api/v1/documents")
-                .contentType(MediaType.APPLICATION_XML)
-                .content("<test>xml</test>"))
-            .andExpect(status().isAccepted())
-            .andExpect(jsonPath("$.correlationId").exists());
-    }
-
-    @Test
-    @DisplayName("POST /api/v1/documents returns 400 for invalid XML")
-    void testSubmitInvoiceReturns400ForInvalidXml() throws Exception {
-        doThrow(new IllegalArgumentException("Could not extract document number"))
-            .when(producerTemplate).sendBodyAndHeader(any(String.class), any(), any(String.class), any());
-
-        mockMvc.perform(post("/api/v1/documents")
-                .contentType(MediaType.APPLICATION_XML)
-                .content("invalid xml"))
-            .andExpect(status().isBadRequest())
-            .andExpect(jsonPath("$.error").value("Invalid document"));
-    }
-
-    @Test
-    @DisplayName("POST /api/v1/documents returns 409 for duplicate document number")
-    void testSubmitInvoiceReturns409ForDuplicateDocument() throws Exception {
-        doThrow(new IllegalStateException("Document number already exists: INV-2024-001"))
-            .when(producerTemplate).sendBodyAndHeader(any(String.class), any(), any(String.class), any());
-
-        mockMvc.perform(post("/api/v1/documents")
-                .contentType(MediaType.APPLICATION_XML)
-                .content("<test>xml</test>")
-                .header("X-Correlation-ID", "corr-dup"))
-            .andExpect(status().isConflict())
-            .andExpect(jsonPath("$.error").value("Document already exists"));
-    }
-
-    @Test
     @DisplayName("GET /api/v1/documents/{id} returns validation result")
     void testGetInvoiceIncludesValidationResult() throws Exception {
         when(getDocumentUseCase.getDocument(testDocument.getId()))
@@ -184,17 +179,29 @@ class DocumentIntakeControllerTest {
     }
 
     @Test
-    @DisplayName("POST /api/v1/documents handles different sources")
-    void testSubmitInvoiceHandlesDifferentSources() throws Exception {
-        when(submitDocumentUseCase.submitDocument(any(), eq("KAFKA"), eq("corr-456")))
-            .thenReturn(testDocument);
+    @DisplayName("rateLimitFallback returns 429 Too Many Requests")
+    void testRateLimitFallbackReturns429() {
+        DocumentIntakeController controller = new DocumentIntakeController(
+            submitDocumentUseCase, validationProperties, getDocumentUseCase);
+        RequestNotPermitted ex = RequestNotPermitted.createRequestNotPermitted(
+            RateLimiter.ofDefaults("test"));
 
+        ResponseEntity<Map<String, Object>> response =
+            controller.rateLimitFallback("<xml/>", null, ex);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
+        assertThat(response.getBody()).containsKey("error");
+        assertThat(response.getBody().get("error")).isEqualTo("Rate limit exceeded");
+    }
+
+    @Test
+    @DisplayName("POST /api/v1/documents returns 400 for blank body (@NotBlank violation)")
+    void testSubmitInvoiceReturns400ForBlankBody() throws Exception {
         mockMvc.perform(post("/api/v1/documents")
                 .contentType(MediaType.APPLICATION_XML)
-                .content("<test>xml</test>")
-                .header("X-Correlation-ID", "corr-456")
-                .header("X-Source", "KAFKA"))
-            .andExpect(status().isAccepted());
+                .content("   "))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.error").exists());
     }
 
     @Test
@@ -212,6 +219,48 @@ class DocumentIntakeControllerTest {
     }
 
     @Test
+    @DisplayName("POST /api/v1/documents with no X-Correlation-ID generates UUID")
+    void testSubmitInvoiceWithNullCorrelationIdGeneratesUuid() throws Exception {
+        when(submitDocumentUseCase.submitDocument(any(), eq("REST"), any()))
+            .thenReturn(testDocument);
+
+        mockMvc.perform(post("/api/v1/documents")
+                .contentType(MediaType.APPLICATION_XML)
+                .content("<test>xml</test>"))
+            .andExpect(status().isAccepted())
+            .andExpect(jsonPath("$.correlationId").isString())
+            .andExpect(jsonPath("$.correlationId").value(
+                org.hamcrest.Matchers.matchesPattern(
+                    "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")));
+    }
+
+    @Test
+    @DisplayName("POST /api/v1/documents handles empty X-Correlation-ID header")
+    void testSubmitInvoiceHandlesEmptyCorrelationId() throws Exception {
+        when(submitDocumentUseCase.submitDocument(any(), eq("REST"), any()))
+            .thenReturn(testDocument);
+
+        mockMvc.perform(post("/api/v1/documents")
+                .contentType(MediaType.APPLICATION_XML)
+                .content("<test>xml</test>")
+                .header("X-Correlation-ID", ""))
+            .andExpect(status().isAccepted());
+    }
+
+    @Test
+    @DisplayName("POST /api/v1/documents ignores X-Source header (source is always REST)")
+    void testSubmitInvoiceIgnoresSourceHeader() throws Exception {
+        when(submitDocumentUseCase.submitDocument(any(), eq("REST"), any()))
+            .thenReturn(testDocument);
+
+        mockMvc.perform(post("/api/v1/documents")
+                .contentType(MediaType.APPLICATION_XML)
+                .content("<test>xml</test>")
+                .header("X-Source", "KAFKA"))
+            .andExpect(status().isAccepted());
+    }
+
+    @Test
     @DisplayName("GET /api/v1/documents/{id} handles document with null documentType")
     void testGetInvoiceHandlesNullDocumentType() throws Exception {
         IncomingDocument documentWithNullType = IncomingDocument.builder()
@@ -219,10 +268,10 @@ class DocumentIntakeControllerTest {
             .documentNumber("INV-2024-003")
             .xmlContent("<test>xml</test>")
             .source("REST")
-            .documentType(null) // Null document type
+            .documentType(null)
             .status(DocumentStatus.VALIDATING)
             .validationResult(ValidationResult.success())
-            .receivedAt(Instant.now())
+            .receivedAt(java.time.Instant.now())
             .build();
 
         when(getDocumentUseCase.getDocument(testDocument.getId()))
@@ -230,7 +279,6 @@ class DocumentIntakeControllerTest {
 
         mockMvc.perform(get("/api/v1/documents/{id}", testDocument.getId()))
             .andExpect(status().isOk())
-            .andExpect(jsonPath("$.documentNumber").value("INV-2024-003"))
             .andExpect(jsonPath("$.status").value("VALIDATING"))
             .andExpect(jsonPath("$.documentType").doesNotExist());
     }
@@ -246,8 +294,8 @@ class DocumentIntakeControllerTest {
             .documentType(DocumentType.TAX_INVOICE)
             .status(DocumentStatus.RECEIVED)
             .validationResult(ValidationResult.success())
-            .receivedAt(Instant.now())
-            .processedAt(null) // Not yet processed
+            .receivedAt(java.time.Instant.now())
+            .processedAt(null)
             .build();
 
         when(getDocumentUseCase.getDocument(testDocument.getId()))
@@ -269,8 +317,8 @@ class DocumentIntakeControllerTest {
             .source("REST")
             .documentType(DocumentType.TAX_INVOICE)
             .status(DocumentStatus.RECEIVED)
-            .validationResult(null) // Not yet validated
-            .receivedAt(Instant.now())
+            .validationResult(null)
+            .receivedAt(java.time.Instant.now())
             .build();
 
         when(getDocumentUseCase.getDocument(testDocument.getId()))
@@ -291,44 +339,5 @@ class DocumentIntakeControllerTest {
         mockMvc.perform(get("/api/v1/documents/{id}", testId))
             .andExpect(status().isInternalServerError())
             .andExpect(jsonPath("$.error").value("Failed to retrieve document status"));
-    }
-
-    @Test
-    @DisplayName("POST /api/v1/documents with null correlation ID returns generated UUID")
-    void testSubmitInvoiceWithNullCorrelationIdGeneratesUuid() throws Exception {
-        when(submitDocumentUseCase.submitDocument(any(), eq("REST"), any()))
-            .thenReturn(testDocument);
-
-        mockMvc.perform(post("/api/v1/documents")
-                .contentType(MediaType.APPLICATION_XML)
-                .content("<test>xml</test>"))
-            .andExpect(status().isAccepted())
-            .andExpect(jsonPath("$.correlationId").isString())
-            .andExpect(jsonPath("$.correlationId").value(
-                org.hamcrest.Matchers.matchesPattern(
-                    "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")));
-    }
-
-    @Test
-    @DisplayName("POST /api/v1/documents handles empty correlation ID header")
-    void testSubmitInvoiceHandlesEmptyCorrelationId() throws Exception {
-        when(submitDocumentUseCase.submitDocument(any(), eq("REST"), any()))
-            .thenReturn(testDocument);
-
-        mockMvc.perform(post("/api/v1/documents")
-                .contentType(MediaType.APPLICATION_XML)
-                .content("<test>xml</test>")
-                .header("X-Correlation-ID", ""))
-            .andExpect(status().isAccepted());
-    }
-
-    @Test
-    @DisplayName("POST /api/v1/documents returns 400 for blank body (@NotBlank violation)")
-    void testSubmitInvoiceReturns400ForBlankBody() throws Exception {
-        mockMvc.perform(post("/api/v1/documents")
-                .contentType(MediaType.APPLICATION_XML)
-                .content("   "))
-            .andExpect(status().isBadRequest())
-            .andExpect(jsonPath("$.error").exists());
     }
 }

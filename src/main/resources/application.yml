@@ -146,6 +146,15 @@ management:
       export:
         enabled: true
 
+# Resilience4j rate limiting
+resilience4j:
+  ratelimiter:
+    instances:
+      documentIntake:
+        limit-for-period: ${app.rate-limit.requests-per-second:10}
+        limit-refresh-period: "${app.rate-limit.time-period-seconds:60}s"
+        timeout-duration: 0s
+
 # Logging configuration
 logging:
   level:

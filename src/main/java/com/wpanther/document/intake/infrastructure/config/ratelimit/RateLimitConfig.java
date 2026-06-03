@@ -5,21 +5,21 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Configuration;
 
 /**
- * Rate limiting configuration using Apache Camel Throttler.
+ * Rate limiting configuration for the document intake REST endpoint.
  * <p>
- * Provides token bucket rate limiting to prevent abuse and DoS attacks.
- * Rate limiting is applied via Camel's throttler component in routes.
- * <p>
- * Configuration via app.rate-limit.* properties:
- * - enabled: Enable/disable rate limiting (default: true)
- * - requests-per-second: Maximum requests per second (default: 10)
- * - time-period-seconds: Time period for rate limit (default: 60)
- * <p>
- * Rate limiting can be disabled by setting:
- * {@code app.rate-limit.enabled=false}
- * <p>
- * Note: RateLimitProperties is always registered regardless of the enabled flag
- * because CamelConfig unconditionally requires it for throttle configuration.
+ * Registers {@link RateLimitProperties} as a configuration-properties bean so its values
+ * ({@code app.rate-limit.requests-per-second}, {@code app.rate-limit.time-period-seconds})
+ * are available for Spring property interpolation in {@code application.yml}, where they
+ * feed the Resilience4j rate-limiter instance configuration:
+ * <pre>
+ * resilience4j.ratelimiter.instances.documentIntake.limit-for-period:
+ *     ${app.rate-limit.requests-per-second:10}
+ * resilience4j.ratelimiter.instances.documentIntake.limit-refresh-period:
+ *     "${app.rate-limit.time-period-seconds:60}s"
+ * </pre>
+ * Rate limiting can be disabled by setting {@code app.rate-limit.enabled=false} in
+ * application properties (the Resilience4j bean still loads; no requests will be
+ * throttled if the rate limiter is not applied via annotation).
  */
 @Slf4j
 @Configuration

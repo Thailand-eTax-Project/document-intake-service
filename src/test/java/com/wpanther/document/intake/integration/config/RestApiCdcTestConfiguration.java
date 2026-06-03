@@ -15,15 +15,12 @@ import org.springframework.transaction.annotation.EnableTransactionManagement;
 /**
  * Test configuration for REST API CDC integration tests.
  * <p>
- * Unlike CdcTestConfiguration, this configuration:
- * <ul>
- *   <li>Does NOT exclude CamelAutoConfiguration (ProducerTemplate needed by REST controller)</li>
- *   <li>Does NOT exclude Controller components (REST API is fully exercised)</li>
- *   <li>Excludes ONLY KafkaAutoConfiguration (prevents Spring from auto-creating Kafka consumer beans)</li>
- * </ul>
+ * Excludes KafkaAutoConfiguration to prevent Spring from auto-creating Kafka consumer beans.
+ * The Kafka consumer is also disabled via {@code app.kafka.consumer.auto-startup=false}.
  * <p>
- * The direct:document-intake Camel route is active for synchronous REST request processing.
- * Kafka consumer is disabled via {@code app.kafka.consumer.auto-startup=false} property.
+ * CamelAutoConfiguration is included so that the Kafka Camel route definition is loaded
+ * (even though the consumer is disabled). The REST controller calls the use case directly
+ * and no longer depends on ProducerTemplate or the direct:document-intake route.
  */
 @TestConfiguration
 @EnableAutoConfiguration(exclude = {
