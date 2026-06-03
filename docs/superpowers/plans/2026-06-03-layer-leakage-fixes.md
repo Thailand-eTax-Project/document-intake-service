@@ -208,13 +208,17 @@ public class DuplicateDocumentException extends RuntimeException {
 
     private final String documentNumber;
 
+    private static final String MESSAGE_SUFFIX =
+        ". A document with this number has already been submitted. " +
+        "Please check existing documents or use a different document number.";
+
     public DuplicateDocumentException(String documentNumber) {
-        super("Document number already exists: " + documentNumber);
+        super("Document number already exists: " + documentNumber + MESSAGE_SUFFIX);
         this.documentNumber = documentNumber;
     }
 
     public DuplicateDocumentException(String documentNumber, Throwable cause) {
-        super("Document number already exists: " + documentNumber, cause);
+        super("Document number already exists: " + documentNumber + MESSAGE_SUFFIX, cause);
         this.documentNumber = documentNumber;
     }
 
@@ -285,7 +289,9 @@ if (documentRepository.existsByDocumentNumber(documentNumber)) {
 }
 ```
 
-Change the race-condition catch block (around line 148–158):
+Remove the race-condition try-catch block entirely (around line 148–158).
+`JpaDocumentRepository.save()` now throws `DuplicateDocumentException` directly (Step 5),
+so the exception propagates naturally — no catch needed in the application service:
 ```java
 // Before
 try {
@@ -299,14 +305,10 @@ try {
 }
 
 // After
-try {
-    document = documentRepository.save(document);
-} catch (DuplicateDocumentException e) {
-    log.warn("Concurrent duplicate document number detected on save: {}", documentNumber);
-    metrics.incrementFailed("concurrent_duplicate");
-    throw e;
-}
+document = documentRepository.save(document);
 ```
+
+**Accepted metrics loss:** `metrics.incrementFailed("concurrent_duplicate")` is intentionally not preserved. After this refactor both duplicate paths (pre-check and concurrent) throw `DuplicateDocumentException` — the application service can no longer distinguish them at the catch site. The pre-check counter (`"duplicate_document_number"`) survives. If the concurrent path needs its own counter in future, it belongs in `JpaDocumentRepository.save()` which is the only remaining catch site, but that would require injecting the metrics port into the repository — scope beyond this task.
 
 - [ ] **Step 5: Update JpaDocumentRepository — catch Spring exception, throw domain exception**
 
@@ -380,7 +382,7 @@ public interface XmlValidationPort {
 }
 ```
 
-- [ ] **Step 2: Update DocumentIntakeServiceTest — stub normalize()**
+- [ ] **Step 2: Update DocumentIntakeServiceTest — stub normalize() and fix two broken tests**
 
 In `DocumentIntakeServiceTest.setUp()`, add a stub for the new method after the existing stubs:
 ```java
@@ -388,12 +390,54 @@ In `DocumentIntakeServiceTest.setUp()`, add a stub for the new method after the 
 when(validationService.normalize(any())).thenAnswer(invocation -> invocation.getArgument(0));
 ```
 
-- [ ] **Step 3: Run tests to verify they fail (adapter doesn't implement normalize() yet)**
+**Fix `testSubmitInvoiceWithNullXml` (will fail without this):** After Task 4 the service calls `normalize(null)` first. Mockito's `any()` matches null, so the setUp stub returns null — `extractDocumentNumber` is then called and the test's `never()` assertion fails. Add a null-specific override inside the test and fix the stale comment:
+```java
+@Test
+@DisplayName("Submit document with null XML throws IllegalArgumentException before validation")
+void testSubmitInvoiceWithNullXml() {
+    // normalize() throws IAE for null (same contract as the adapter implementation)
+    when(validationService.normalize(isNull()))
+        .thenThrow(new IllegalArgumentException("xmlContent must not be null"));
+
+    assertThatThrownBy(() -> documentIntakeService.submitDocument(null, DEFAULT_SOURCE, "corr-123"))
+        .isInstanceOf(IllegalArgumentException.class);
+
+    // normalize() throws IllegalArgumentException before extractDocumentNumber is called
+    verify(validationService, never()).extractDocumentNumber(any());
+    verify(documentRepository, never()).save(any());
+}
+```
+Add `import static org.mockito.ArgumentMatchers.isNull;` to the test file's imports.
+
+**Rewrite `testSubmitDocumentNormalizesXmlContent` (will fail without this):** The test currently captures the argument passed to `extractDocumentNumber` and asserts whitespace was stripped. With the no-op normalize stub, the captor receives the original indented XML and the content assertions fail. Replace the test to verify the service delegates to the port — actual normalization correctness belongs in a `TedaXmlValidationAdapter` test:
+```java
+@Test
+@DisplayName("Submit document delegates XML normalization to validation port")
+void testSubmitDocumentNormalizesXmlContent() {
+    String indentedXml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <rsm:TaxInvoice_CrossIndustryInvoice
+            xmlns:rsm="urn:etda:uncefact:data:standard:TaxInvoice_CrossIndustryInvoice:2"
+            xmlns:ram="urn:etda:uncefact:data:standard:TaxInvoice_ReusableAggregateBusinessInformationEntity:2">
+            <rsm:ExchangedDocument>
+                <ram:ID>NORM-001</ram:ID>
+            </rsm:ExchangedDocument>
+        </rsm:TaxInvoice_CrossIndustryInvoice>
+        """;
+
+    documentIntakeService.submitDocument(indentedXml, DEFAULT_SOURCE, "corr-norm");
+
+    // The application service must delegate normalisation to the port
+    verify(validationService).normalize(indentedXml);
+}
+```
+
+- [ ] **Step 3: Verify compilation fails (adapter doesn't implement normalize() yet)**
 
 ```bash
-mvn test -q 2>&1 | grep -E "ERROR|FAIL|normalize"
+mvn test -q 2>&1 | grep -E "error:|ERROR"
 ```
-Expected: FAIL — compilation error because `TedaXmlValidationAdapter` does not implement `normalize()`.
+Expected: compilation error — `TedaXmlValidationAdapter` does not yet implement `normalize()`, so the whole module fails to compile. This is a compilation error, not a test failure. Proceed to Step 4 to add the implementation.
 
 - [ ] **Step 4: Implement `normalize()` in TedaXmlValidationAdapter**
 
@@ -899,6 +943,153 @@ class DocumentIntakeControllerTest {
         assertThat(response.getBody()).containsKey("error");
         assertThat(response.getBody().get("error")).isEqualTo("Rate limit exceeded");
     }
+
+    @Test
+    @DisplayName("POST /api/v1/documents returns 400 for blank body (@NotBlank violation)")
+    void testSubmitInvoiceReturns400ForBlankBody() throws Exception {
+        mockMvc.perform(post("/api/v1/documents")
+                .contentType(MediaType.APPLICATION_XML)
+                .content("   "))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.error").exists());
+    }
+
+    @Test
+    @DisplayName("POST /api/v1/documents accepts text/xml content type")
+    void testSubmitInvoiceAcceptsTextXmlContentType() throws Exception {
+        when(submitDocumentUseCase.submitDocument(any(), eq("REST"), any()))
+            .thenReturn(testDocument);
+
+        mockMvc.perform(post("/api/v1/documents")
+                .contentType(MediaType.TEXT_XML)
+                .content("<test>xml</test>")
+                .header("X-Correlation-ID", "corr-text-xml"))
+            .andExpect(status().isAccepted())
+            .andExpect(jsonPath("$.correlationId").value("corr-text-xml"));
+    }
+
+    @Test
+    @DisplayName("POST /api/v1/documents with no X-Correlation-ID generates UUID")
+    void testSubmitInvoiceWithNullCorrelationIdGeneratesUuid() throws Exception {
+        when(submitDocumentUseCase.submitDocument(any(), eq("REST"), any()))
+            .thenReturn(testDocument);
+
+        mockMvc.perform(post("/api/v1/documents")
+                .contentType(MediaType.APPLICATION_XML)
+                .content("<test>xml</test>"))
+            .andExpect(status().isAccepted())
+            .andExpect(jsonPath("$.correlationId").isString())
+            .andExpect(jsonPath("$.correlationId").value(
+                org.hamcrest.Matchers.matchesPattern(
+                    "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")));
+    }
+
+    @Test
+    @DisplayName("POST /api/v1/documents handles empty X-Correlation-ID header")
+    void testSubmitInvoiceHandlesEmptyCorrelationId() throws Exception {
+        when(submitDocumentUseCase.submitDocument(any(), eq("REST"), any()))
+            .thenReturn(testDocument);
+
+        mockMvc.perform(post("/api/v1/documents")
+                .contentType(MediaType.APPLICATION_XML)
+                .content("<test>xml</test>")
+                .header("X-Correlation-ID", ""))
+            .andExpect(status().isAccepted());
+    }
+
+    @Test
+    @DisplayName("POST /api/v1/documents ignores X-Source header (source is always REST)")
+    void testSubmitInvoiceIgnoresSourceHeader() throws Exception {
+        when(submitDocumentUseCase.submitDocument(any(), eq("REST"), any()))
+            .thenReturn(testDocument);
+
+        mockMvc.perform(post("/api/v1/documents")
+                .contentType(MediaType.APPLICATION_XML)
+                .content("<test>xml</test>")
+                .header("X-Source", "KAFKA"))
+            .andExpect(status().isAccepted());
+    }
+
+    @Test
+    @DisplayName("GET /api/v1/documents/{id} handles document with null documentType")
+    void testGetInvoiceHandlesNullDocumentType() throws Exception {
+        IncomingDocument documentWithNullType = IncomingDocument.builder()
+            .id(testDocument.getId())
+            .documentNumber("INV-2024-003")
+            .xmlContent("<test>xml</test>")
+            .source("REST")
+            .documentType(null)
+            .status(DocumentStatus.VALIDATING)
+            .validationResult(ValidationResult.success())
+            .receivedAt(java.time.Instant.now())
+            .build();
+
+        when(getDocumentUseCase.getDocument(testDocument.getId()))
+            .thenReturn(documentWithNullType);
+
+        mockMvc.perform(get("/api/v1/documents/{id}", testDocument.getId()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.status").value("VALIDATING"))
+            .andExpect(jsonPath("$.documentType").doesNotExist());
+    }
+
+    @Test
+    @DisplayName("GET /api/v1/documents/{id} handles document without processedAt")
+    void testGetInvoiceHandlesNullProcessedAt() throws Exception {
+        IncomingDocument documentWithoutProcessedAt = IncomingDocument.builder()
+            .id(testDocument.getId())
+            .documentNumber("INV-2024-004")
+            .xmlContent("<test>xml</test>")
+            .source("REST")
+            .documentType(DocumentType.TAX_INVOICE)
+            .status(DocumentStatus.RECEIVED)
+            .validationResult(ValidationResult.success())
+            .receivedAt(java.time.Instant.now())
+            .processedAt(null)
+            .build();
+
+        when(getDocumentUseCase.getDocument(testDocument.getId()))
+            .thenReturn(documentWithoutProcessedAt);
+
+        mockMvc.perform(get("/api/v1/documents/{id}", testDocument.getId()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.receivedAt").exists())
+            .andExpect(jsonPath("$.processedAt").doesNotExist());
+    }
+
+    @Test
+    @DisplayName("GET /api/v1/documents/{id} handles document without validation result")
+    void testGetInvoiceHandlesNullValidationResult() throws Exception {
+        IncomingDocument documentWithoutValidation = IncomingDocument.builder()
+            .id(testDocument.getId())
+            .documentNumber("INV-2024-005")
+            .xmlContent("<test>xml</test>")
+            .source("REST")
+            .documentType(DocumentType.TAX_INVOICE)
+            .status(DocumentStatus.RECEIVED)
+            .validationResult(null)
+            .receivedAt(java.time.Instant.now())
+            .build();
+
+        when(getDocumentUseCase.getDocument(testDocument.getId()))
+            .thenReturn(documentWithoutValidation);
+
+        mockMvc.perform(get("/api/v1/documents/{id}", testDocument.getId()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.validationResult").doesNotExist());
+    }
+
+    @Test
+    @DisplayName("GET /api/v1/documents/{id} returns 500 for unexpected errors")
+    void testGetInvoiceReturns500ForUnexpectedErrors() throws Exception {
+        UUID testId = UUID.randomUUID();
+        when(getDocumentUseCase.getDocument(testId))
+            .thenThrow(new RuntimeException("Database connection failed"));
+
+        mockMvc.perform(get("/api/v1/documents/{id}", testId))
+            .andExpect(status().isInternalServerError())
+            .andExpect(jsonPath("$.error").value("Failed to retrieve document status"));
+    }
 }
 ```
 
@@ -1244,6 +1435,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Integration test verifying CamelConfig initialises cleanly.
  * The direct:document-intake route has been removed; the controller calls the use case directly.
  * The Kafka consumer route is disabled in this test via auto-startup=false.
+ * Kafka route behaviour (DLQ, retry, document processing) is covered by DocumentIntakeCdcIT.
  */
 @CamelSpringBootTest
 @EnableAutoConfiguration(exclude = {
@@ -1262,8 +1454,7 @@ import static org.assertj.core.api.Assertions.assertThat;
     "camel.springboot.xml-routes=false"
 })
 @ComponentScan(basePackages = {
-    "com.wpanther.document.intake.infrastructure.config.camel",
-    "com.wpanther.document.intake.infrastructure.config.ratelimit"
+    "com.wpanther.document.intake.infrastructure.config.camel"
 })
 @DisplayName("CamelConfig Integration Tests")
 class CamelConfigTest {
@@ -1301,20 +1492,45 @@ In `RestApiCdcTestConfiguration.java`, update the Javadoc comment block (lines 1
 
 No changes to the `@EnableAutoConfiguration`, `@ComponentScan`, or any other annotation.
 
-- [ ] **Step 9: Run all tests**
+- [ ] **Step 9: Update RateLimitConfig Javadoc**
+
+In `infrastructure/config/ratelimit/RateLimitConfig.java`, replace the stale Javadoc comment
+(lines 9–22) that says `CamelConfig unconditionally requires it for throttle configuration`:
+```java
+/**
+ * Rate limiting configuration for the document intake REST endpoint.
+ * <p>
+ * Registers {@link RateLimitProperties} as a configuration-properties bean so its values
+ * ({@code app.rate-limit.requests-per-second}, {@code app.rate-limit.time-period-seconds})
+ * are available for Spring property interpolation in {@code application.yml}, where they
+ * feed the Resilience4j rate-limiter instance configuration:
+ * <pre>
+ * resilience4j.ratelimiter.instances.documentIntake.limit-for-period:
+ *     ${app.rate-limit.requests-per-second:10}
+ * resilience4j.ratelimiter.instances.documentIntake.limit-refresh-period:
+ *     "${app.rate-limit.time-period-seconds:60}s"
+ * </pre>
+ * Rate limiting can be disabled by setting {@code app.rate-limit.enabled=false} in
+ * application properties (the Resilience4j bean still loads; no requests will be
+ * throttled if the rate limiter is not applied via annotation).
+ */
+```
+
+- [ ] **Step 10: Run all tests**
 
 ```bash
 mvn test -q
 ```
 Expected: BUILD SUCCESS.
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
 git add pom.xml \
         src/main/resources/application.yml \
         src/main/java/com/wpanther/document/intake/infrastructure/adapter/in/web/DocumentIntakeController.java \
         src/main/java/com/wpanther/document/intake/infrastructure/config/camel/CamelConfig.java \
+        src/main/java/com/wpanther/document/intake/infrastructure/config/ratelimit/RateLimitConfig.java \
         src/test/java/com/wpanther/document/intake/infrastructure/adapter/in/web/DocumentIntakeControllerTest.java \
         src/test/java/com/wpanther/document/intake/infrastructure/config/camel/CamelConfigTest.java \
         src/test/java/com/wpanther/document/intake/integration/config/RestApiCdcTestConfiguration.java

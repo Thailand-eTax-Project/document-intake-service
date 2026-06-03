@@ -9,7 +9,6 @@ import com.wpanther.document.intake.application.port.out.DocumentEventPublisher;
 import com.wpanther.document.intake.domain.model.DocumentType;
 import com.wpanther.document.intake.application.port.out.DocumentIntakeMetricsPort;
 import com.wpanther.document.intake.application.dto.event.DocumentReceivedTraceEvent;
-import com.wpanther.document.intake.application.dto.event.EventStatus;
 import com.wpanther.document.intake.application.dto.event.StartSagaCommand;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -479,15 +478,15 @@ class DocumentIntakeServiceTest {
         assertThat(events).hasSize(3);
 
         // First event should be RECEIVED
-        assertThat(events.get(0).getStatus()).isEqualTo(EventStatus.RECEIVED.getValue());
+        assertThat(events.get(0).getStatus()).isEqualTo("RECEIVED");
         assertThat(events.get(0).getCorrelationId()).isEqualTo(correlationId);
 
         // Second event should be VALIDATED
-        assertThat(events.get(1).getStatus()).isEqualTo(EventStatus.VALIDATED.getValue());
+        assertThat(events.get(1).getStatus()).isEqualTo("VALIDATED");
         assertThat(events.get(1).getCorrelationId()).isEqualTo(correlationId);
 
         // Third event should be FORWARDED
-        assertThat(events.get(2).getStatus()).isEqualTo(EventStatus.FORWARDED.getValue());
+        assertThat(events.get(2).getStatus()).isEqualTo("FORWARDED");
         assertThat(events.get(2).getCorrelationId()).isEqualTo(correlationId);
 
         // Capture and verify saga command
@@ -522,11 +521,11 @@ class DocumentIntakeServiceTest {
         assertThat(events).hasSize(2);
 
         // First event should be RECEIVED
-        assertThat(events.get(0).getStatus()).isEqualTo(EventStatus.RECEIVED.getValue());
+        assertThat(events.get(0).getStatus()).isEqualTo("RECEIVED");
         assertThat(events.get(0).getCorrelationId()).isEqualTo(correlationId);
 
         // Second event should be INVALID
-        assertThat(events.get(1).getStatus()).isEqualTo(EventStatus.INVALID.getValue());
+        assertThat(events.get(1).getStatus()).isEqualTo("INVALID");
         assertThat(events.get(1).getCorrelationId()).isEqualTo(correlationId);
         assertThat(events.get(1).getSource()).isEqualTo(ALTERNATIVE_SOURCE);
     }

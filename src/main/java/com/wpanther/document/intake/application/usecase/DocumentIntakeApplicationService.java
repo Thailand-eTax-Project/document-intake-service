@@ -2,7 +2,6 @@ package com.wpanther.document.intake.application.usecase;
 
 import com.wpanther.document.intake.application.port.out.DocumentIntakeMetricsPort;
 import com.wpanther.document.intake.application.dto.event.DocumentReceivedTraceEvent;
-import com.wpanther.document.intake.application.dto.event.EventStatus;
 import com.wpanther.document.intake.application.dto.event.StartSagaCommand;
 import com.wpanther.document.intake.domain.model.DocumentType;
 import com.wpanther.document.intake.domain.model.IncomingDocument;
@@ -165,7 +164,7 @@ public class DocumentIntakeApplicationService implements SubmitDocumentUseCase, 
             .documentType(document.getDocumentType().name())
             .documentNumber(document.getDocumentNumber())
             .correlationId(correlationId)
-            .status(EventStatus.RECEIVED.getValue())
+            .status(document.getStatus().name())
             .source(source)
             .build();
         eventPublisher.publishTraceEvent(traceEvent);
@@ -206,7 +205,7 @@ public class DocumentIntakeApplicationService implements SubmitDocumentUseCase, 
                 .documentType(document.getDocumentType().name())
                 .documentNumber(document.getDocumentNumber())
                 .correlationId(correlationId)
-                .status(EventStatus.VALIDATED.getValue())
+                .status(document.getStatus().name())
                 .source(source)
                 .build();
             eventPublisher.publishTraceEvent(validatedEvent);
@@ -224,7 +223,7 @@ public class DocumentIntakeApplicationService implements SubmitDocumentUseCase, 
                 .documentType(document.getDocumentType().name())
                 .documentNumber(document.getDocumentNumber())
                 .correlationId(correlationId)
-                .status(EventStatus.FORWARDED.getValue())
+                .status(document.getStatus().name())
                 .source(source)
                 .build();
             eventPublisher.publishTraceEvent(forwardedEvent);
@@ -241,7 +240,7 @@ public class DocumentIntakeApplicationService implements SubmitDocumentUseCase, 
                 .documentType(document.getDocumentType().name())
                 .documentNumber(document.getDocumentNumber())
                 .correlationId(correlationId)
-                .status(EventStatus.INVALID.getValue())
+                .status(document.getStatus().name())
                 .source(source)
                 .build();
             eventPublisher.publishTraceEvent(invalidEvent);

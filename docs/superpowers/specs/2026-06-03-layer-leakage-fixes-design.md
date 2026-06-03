@@ -29,9 +29,23 @@ coupling to Spring, Camel, and Java serialization from layers that should be fra
 Spring's `DataIntegrityViolationException` is caught in `submitDocument()` to detect
 duplicate document numbers. This is a Spring Data type with no business meaning.
 
-**Fix:** Create `domain/exception/DuplicateDocumentException`. Catch
-`DataIntegrityViolationException` in `JpaDocumentRepository.save()` and re-throw
-`DuplicateDocumentException`. The application service catches the domain exception instead.
+`submitDocument()` has **two** code paths that produce a duplicate-document response:
+
+1. **Pre-check path** — `documentRepository.existsByDocumentNumber()` returns `true`
+   before save. Currently throws `IllegalStateException`.
+2. **Concurrent path** — a race-condition duplicate slips past the pre-check and surfaces
+   as `DataIntegrityViolationException` from `jpaRepository.save()`. Currently caught and
+   re-thrown as `IllegalStateException` from within the application service.
+
+Both paths must be fixed together. Issue 4 replaces `catch (IllegalStateException e)` → 409
+in the controller with `catch (DuplicateDocumentException e)` → 409. If only the concurrent
+path is fixed, the pre-check path silently falls through to the 500 handler.
+
+**Fix:** Create `domain/exception/DuplicateDocumentException`. In `JpaDocumentRepository.save()`,
+catch `DataIntegrityViolationException` and re-throw `DuplicateDocumentException` — the Spring
+exception never leaves the infrastructure adapter. In the application service, replace the
+pre-check `IllegalStateException` with `DuplicateDocumentException`, and remove the
+`try/catch` around `documentRepository.save()` (the domain exception now propagates naturally).
 
 ```java
 // domain/exception/DuplicateDocumentException.java
@@ -56,8 +70,22 @@ try {
 }
 ```
 
-The `DataIntegrityViolationException` import remains in `JpaDocumentRepository` where
-it belongs. The application service imports only `DuplicateDocumentException`.
+```java
+// DocumentIntakeApplicationService.submitDocument() — application service
+// Pre-check path: throw domain exception, not IllegalStateException
+if (documentRepository.existsByDocumentNumber(documentNumber)) {
+    log.warn("Document number {} already exists", documentNumber);
+    metrics.incrementFailed("duplicate_document_number");
+    throw new DuplicateDocumentException(documentNumber, null);
+}
+
+// Concurrent path: remove the try/catch — DuplicateDocumentException propagates from save()
+document = documentRepository.save(document);
+```
+
+The `DataIntegrityViolationException` import is removed from the application service entirely.
+It remains in `JpaDocumentRepository` where it belongs. The application service imports only
+`DuplicateDocumentException`.
 
 ---
 
