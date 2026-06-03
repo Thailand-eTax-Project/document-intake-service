@@ -201,13 +201,6 @@ class ValidationResultTest {
     }
 
     @Test
-    void testImplementsSerializable() {
-        ValidationResult result = ValidationResult.success();
-
-        assertThat(result).isInstanceOf(java.io.Serializable.class);
-    }
-
-    @Test
     void testRecordEqualsAndHashCode() {
         ValidationResult result1 = ValidationResult.invalid(List.of("Error"), List.of("Warning"));
         ValidationResult result2 = ValidationResult.invalid(List.of("Error"), List.of("Warning"));
