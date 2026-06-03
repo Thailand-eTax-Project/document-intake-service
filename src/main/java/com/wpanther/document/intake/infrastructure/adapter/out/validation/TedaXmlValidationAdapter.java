@@ -55,6 +55,26 @@ import static javax.xml.XMLConstants.FEATURE_SECURE_PROCESSING;
 @Service
 public class TedaXmlValidationAdapter implements XmlValidationPort {
 
+    private static final javax.xml.parsers.DocumentBuilderFactory XML_DBF;
+    private static final javax.xml.transform.TransformerFactory XML_TF;
+
+    static {
+        XML_DBF = javax.xml.parsers.DocumentBuilderFactory.newInstance();
+        XML_DBF.setNamespaceAware(true);
+        try {
+            XML_DBF.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+        } catch (javax.xml.parsers.ParserConfigurationException e) {
+            throw new ExceptionInInitializerError("Failed to configure secure XML parser: " + e.getMessage());
+        }
+        XML_TF = javax.xml.transform.TransformerFactory.newInstance();
+        try {
+            XML_TF.setAttribute(javax.xml.XMLConstants.ACCESS_EXTERNAL_DTD, "");
+            XML_TF.setAttribute(javax.xml.XMLConstants.ACCESS_EXTERNAL_STYLESHEET, "");
+        } catch (IllegalArgumentException ignored) {
+            // Some XSLT implementations do not support these attributes
+        }
+    }
+
     private final SchemaPathConfig schemaPathConfig;
 
     // Thread-safe cached JAXB contexts and schemas (initialized once at startup)
@@ -89,6 +109,43 @@ public class TedaXmlValidationAdapter implements XmlValidationPort {
         long duration = System.currentTimeMillis() - startTime;
         log.info("TedaXmlValidationAdapter initialized in {}ms with {} JAXB contexts and {} schemas",
             duration, jaxbContexts.size(), schemas.size());
+    }
+
+    @Override
+    public String normalize(String xmlContent) {
+        if (xmlContent == null) throw new IllegalArgumentException("xmlContent must not be null");
+        if (xmlContent.isBlank()) return xmlContent;
+        try {
+            org.w3c.dom.Document doc = XML_DBF.newDocumentBuilder()
+                .parse(new org.xml.sax.InputSource(new java.io.StringReader(xmlContent.strip())));
+            stripWhitespaceOnlyTextNodes(doc);
+            javax.xml.transform.Transformer transformer = XML_TF.newTransformer();
+            transformer.setOutputProperty(javax.xml.transform.OutputKeys.INDENT, "no");
+            java.io.StringWriter out = new java.io.StringWriter();
+            transformer.transform(
+                new javax.xml.transform.dom.DOMSource(doc),
+                new javax.xml.transform.stream.StreamResult(out));
+            return out.toString();
+        } catch (IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IllegalArgumentException("XML normalization failed: invalid XML content", e);
+        }
+    }
+
+    private static void stripWhitespaceOnlyTextNodes(org.w3c.dom.Node node) {
+        java.util.List<org.w3c.dom.Node> toRemove = new java.util.ArrayList<>();
+        org.w3c.dom.NodeList children = node.getChildNodes();
+        for (int i = 0; i < children.getLength(); i++) {
+            org.w3c.dom.Node child = children.item(i);
+            if (child.getNodeType() == org.w3c.dom.Node.TEXT_NODE
+                    && child.getNodeValue().strip().isEmpty()) {
+                toRemove.add(child);
+            } else {
+                stripWhitespaceOnlyTextNodes(child);
+            }
+        }
+        toRemove.forEach(node::removeChild);
     }
 
     @Override

@@ -31,27 +31,6 @@ public class DocumentIntakeApplicationService implements SubmitDocumentUseCase, 
 
     private static final Logger log = LoggerFactory.getLogger(DocumentIntakeApplicationService.class);
 
-    private static final javax.xml.parsers.DocumentBuilderFactory XML_DBF;
-    private static final javax.xml.transform.TransformerFactory XML_TF;
-
-    static {
-        XML_DBF = javax.xml.parsers.DocumentBuilderFactory.newInstance();
-        XML_DBF.setNamespaceAware(true);
-        try {
-            XML_DBF.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
-        } catch (javax.xml.parsers.ParserConfigurationException e) {
-            throw new ExceptionInInitializerError("Failed to configure secure XML parser: " + e.getMessage());
-        }
-        XML_TF = javax.xml.transform.TransformerFactory.newInstance();
-        try {
-            XML_TF.setAttribute(javax.xml.XMLConstants.ACCESS_EXTERNAL_DTD, "");
-            XML_TF.setAttribute(javax.xml.XMLConstants.ACCESS_EXTERNAL_STYLESHEET, "");
-        } catch (IllegalArgumentException ignored) {
-            // Some XSLT implementations do not support these attributes; safe to ignore
-            // since current usage only calls newTransformer() with no external stylesheet
-        }
-    }
-
     private final DocumentRepository documentRepository;
     private final XmlValidationPort validationService;
     private final DocumentEventPublisher eventPublisher;
@@ -93,7 +72,7 @@ public class DocumentIntakeApplicationService implements SubmitDocumentUseCase, 
     @Override
     public IncomingDocument submitDocument(String xmlContent, String source, String correlationId) {
         // Normalize XML: remove inter-element whitespace using XML-aware DOM transformation
-        xmlContent = normalizeXml(xmlContent);
+        xmlContent = validationService.normalize(xmlContent);
         long startTime = System.currentTimeMillis();
         log.info("Submitting document from source: {} with correlationId: {}", source, correlationId);
 
@@ -255,54 +234,5 @@ public class DocumentIntakeApplicationService implements SubmitDocumentUseCase, 
     public IncomingDocument getDocument(UUID id) {
         return documentRepository.findById(id)
             .orElseThrow(() -> new IllegalArgumentException("Document not found: " + id));
-    }
-
-    /**
-     * Normalizes XML by removing whitespace-only text nodes (inter-element whitespace)
-     * without touching actual text content or attribute values.
-     * Uses DOM parsing + Transformer serialization for XML-aware, safe normalization.
-     * Returns null as-is (caller will NPE on strip()) and blank strings unchanged
-     * so downstream validation can produce the correct error message.
-     */
-    private static String normalizeXml(String xmlContent) {
-        if (xmlContent == null) throw new IllegalArgumentException("xmlContent must not be null");
-        if (xmlContent.isBlank()) return xmlContent;
-        try {
-            org.w3c.dom.Document doc = XML_DBF.newDocumentBuilder()
-                .parse(new org.xml.sax.InputSource(new java.io.StringReader(xmlContent.strip())));
-
-            stripWhitespaceOnlyTextNodes(doc);
-
-            javax.xml.transform.Transformer transformer = XML_TF.newTransformer();
-            transformer.setOutputProperty(javax.xml.transform.OutputKeys.INDENT, "no");
-            java.io.StringWriter out = new java.io.StringWriter();
-            transformer.transform(
-                new javax.xml.transform.dom.DOMSource(doc),
-                new javax.xml.transform.stream.StreamResult(out));
-            return out.toString();
-        } catch (IllegalArgumentException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new IllegalArgumentException("XML normalization failed: invalid XML content", e);
-        }
-    }
-
-    /**
-     * Recursively removes whitespace-only text nodes from a DOM tree.
-     * Text nodes with actual content (amounts, dates, IDs) are preserved.
-     */
-    private static void stripWhitespaceOnlyTextNodes(org.w3c.dom.Node node) {
-        java.util.List<org.w3c.dom.Node> toRemove = new java.util.ArrayList<>();
-        org.w3c.dom.NodeList children = node.getChildNodes();
-        for (int i = 0; i < children.getLength(); i++) {
-            org.w3c.dom.Node child = children.item(i);
-            if (child.getNodeType() == org.w3c.dom.Node.TEXT_NODE
-                    && child.getNodeValue().strip().isEmpty()) {
-                toRemove.add(child);
-            } else {
-                stripWhitespaceOnlyTextNodes(child);
-            }
-        }
-        toRemove.forEach(node::removeChild);
     }
 }

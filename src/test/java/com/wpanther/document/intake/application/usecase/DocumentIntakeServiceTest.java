@@ -30,6 +30,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.*;
 
 /**
@@ -115,6 +116,7 @@ class DocumentIntakeServiceTest {
         when(validationService.extractDocumentNumber(any())).thenReturn(TEST_DOCUMENT_NUMBER);
         when(validationService.extractDocumentType(any())).thenReturn(DocumentType.TAX_INVOICE);
         when(validationService.validate(any())).thenReturn(ValidationResult.success());
+        when(validationService.normalize(any())).thenAnswer(invocation -> invocation.getArgument(0));
         when(documentRepository.existsByDocumentNumber(any())).thenReturn(false);
         when(documentRepository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
         // Metrics methods do nothing by default
@@ -256,10 +258,12 @@ class DocumentIntakeServiceTest {
     @Test
     @DisplayName("Submit document with null XML throws IllegalArgumentException before validation")
     void testSubmitInvoiceWithNullXml() {
+        when(validationService.normalize(isNull()))
+            .thenThrow(new IllegalArgumentException("xmlContent must not be null"));
+
         assertThatThrownBy(() -> documentIntakeService.submitDocument(null, DEFAULT_SOURCE, "corr-123"))
             .isInstanceOf(IllegalArgumentException.class);
 
-        // Normalization (strip) throws NPE before extractDocumentNumber is called
         verify(validationService, never()).extractDocumentNumber(any());
         verify(documentRepository, never()).save(any());
     }
@@ -291,7 +295,7 @@ class DocumentIntakeServiceTest {
     }
 
     @Test
-    @DisplayName("Submit document normalizes XML before processing - strips inter-element whitespace")
+    @DisplayName("Submit document delegates XML normalization to validation port")
     void testSubmitDocumentNormalizesXmlContent() {
         String indentedXml = """
             <?xml version="1.0" encoding="UTF-8"?>
@@ -304,18 +308,9 @@ class DocumentIntakeServiceTest {
             </rsm:TaxInvoice_CrossIndustryInvoice>
             """;
 
-        ArgumentCaptor<String> xmlCaptor = ArgumentCaptor.forClass(String.class);
-        when(validationService.extractDocumentNumber(xmlCaptor.capture())).thenReturn("NORM-001");
-
         documentIntakeService.submitDocument(indentedXml, DEFAULT_SOURCE, "corr-norm");
 
-        String captured = xmlCaptor.getValue();
-        // Must not contain whitespace between tags
-        assertThat(captured).doesNotContainPattern(">\\s+<");
-        // Must be a single line (no newlines)
-        assertThat(captured).doesNotContain("\n");
-        // Content inside tags must be preserved
-        assertThat(captured).contains("<ram:ID>NORM-001</ram:ID>");
+        verify(validationService).normalize(indentedXml);
     }
 
     // ==================== Repository Interaction Tests ====================
